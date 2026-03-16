@@ -1,22 +1,43 @@
 """
 Simplified Playwright Performance Testing Framework
 Maintains session persistence and transaction management without K8s complexity
+
+Enhanced with common utilities from original framework
 """
 
 import os
 import asyncio
 import time
 import random
+import uuid
 from pathlib import Path
 from playwright.async_api import async_playwright
 from locust import User, task, events
 from contextlib import asynccontextmanager
+
+# Import enhanced common utilities
+from common_enhanced import (
+    txn,
+    nowdttm,
+    timestamp,
+    unique_user_string,
+    generate_unique_id,
+    load_config_from_file
+)
 
 
 class SimplifiedFramework(User):
     """
     Base class for Playwright performance tests.
     Handles browser lifecycle, session persistence, and transaction management.
+    
+    Enhanced Features:
+    - Session persistence across iterations
+    - Transaction-based performance measurement
+    - User ID tracking and context
+    - Enhanced logging with pprint
+    - Configuration from env files
+    - Error recovery with UI reset
     """
     abstract = True
     
@@ -25,6 +46,9 @@ class SimplifiedFramework(User):
     headless = os.getenv("HEADLESS", "true").lower() in ["true", "1", "yes"]
     transaction_timeout = int(os.getenv("TRANSACTION_TIMEOUT", "10000"))
     enable_tracing = os.getenv("ENABLE_TRACING", "false").lower() in ["true", "1", "yes"]
+    
+    # Enhanced tracking
+    ABORT_ITERATION_WHEN_TXN_FAILS = True
     
     def on_start(self):
         """Synchronous wrapper for async initialization"""
@@ -39,17 +63,39 @@ class SimplifiedFramework(User):
         """Main test execution wrapper"""
         asyncio.run(self._run_performance_test())
     
+    def pprint(self, msg: str):
+        """
+        Enhanced print with context information.
+        Includes user ID, iteration, task, and transaction info.
+        """
+        context = unique_user_string(self)
+        print(f"[{timestamp()}] {context} | {msg}")
+    
     async def _async_on_start(self):
-        """Initialize browser and persistent session"""
+        """Initialize browser and persistent session with enhanced tracking"""
         # Create unique user data directory for session persistence
         user_data_dir = Path(f"./user_data/user_{id(self)}")
         user_data_dir.mkdir(parents=True, exist_ok=True)
         self.user_data_dir = user_data_dir
         
-        # Initialize tracking variables
+        # Initialize enhanced tracking variables
         self.iteration = 0
-        self.current_transaction = None
+        self.currenttxn = None
+        self.currenttask = None
+        self.currentclass = self.__class__.__name__
+        self.currentscript = os.path.basename(__file__)
         self.has_logged_in = False
+        
+        # User identification
+        self.vuser_uuid = str(uuid.uuid4())
+        self.vuserid = id(self) % 10000  # Simple ID for standalone mode
+        self.startuporderid = id(self)
+        self.my_runner_client_id = "standalone"
+        
+        # Iteration tracking
+        self.iteration_start_timestamp = None
+        self.iterationAllTxnPassed = True
+        self.error_screenshot_made = False
         
         # Launch persistent browser context
         self.pw = await async_playwright().start()
@@ -67,11 +113,15 @@ class SimplifiedFramework(User):
         )
         self.page = await self.browser.new_page()
         
-        print(f"[User {id(self)}] Browser initialized in {'headless' if self.headless else 'headed'} mode")
+        self.pprint(f"Browser initialized in {'headless' if self.headless else 'headed'} mode")
+        
+        # Call user-defined initialization if available
+        if hasattr(self, 'user_init'):
+            await self.user_init()
     
     async def _async_on_stop(self):
         """Cleanup browser and session"""
-        print(f"[User {id(self)}] Cleaning up session...")
+        self.pprint("Cleaning up session...")
         try:
             if hasattr(self, 'page') and self.page:
                 await self.page.close()
@@ -79,13 +129,19 @@ class SimplifiedFramework(User):
                 await self.browser.close()
             if hasattr(self, 'pw') and self.pw:
                 await self.pw.stop()
+            self.pprint("Cleanup complete")
         except Exception as e:
-            print(f"[User {id(self)}] Cleanup error: {e}")
+            self.pprint(f"Cleanup error: {e}")
     
     async def _run_performance_test(self):
-        """Execute the test iteration"""
+        """Execute the test iteration with enhanced tracking"""
         self.iteration += 1
+        self.iteration_start_timestamp = nowdttm()
+        self.iterationAllTxnPassed = True
+        self.error_screenshot_made = False
+        
         start_time = time.time()
+        self.pprint(f"Starting iteration {self.iteration}")
         
         try:
             if self.enable_tracing:
@@ -95,18 +151,25 @@ class SimplifiedFramework(User):
             await self.test_scenario()
             
             if self.enable_tracing:
-                trace_path = f"./traces/user_{id(self)}_iter_{self.iteration}.zip"
+                trace_path = f"./traces/user_{self.vuserid}_iter_{self.iteration}.zip"
                 Path("./traces").mkdir(exist_ok=True)
                 await self.page.context.tracing.stop(path=trace_path)
             
-            print(f"[User {id(self)}] Iteration {self.iteration} completed in {time.time() - start_time:.2f}s")
+            duration = time.time() - start_time
+            status = "✓" if self.iterationAllTxnPassed else "✗"
+            self.pprint(f"{status} Iteration {self.iteration} completed in {duration:.2f}s")
         
         except Exception as e:
-            print(f"[User {id(self)}] Iteration {self.iteration} failed: {e}")
+            self.pprint(f"✗ Iteration {self.iteration} failed: {type(e).__name__}: {str(e)[:100]}")
+            
             if self.enable_tracing:
-                trace_path = f"./traces/user_{id(self)}_iter_{self.iteration}_FAILED.zip"
+                trace_path = f"./traces/user_{self.vuserid}_iter_{self.iteration}_FAILED.zip"
                 Path("./traces").mkdir(exist_ok=True)
-                await self.page.context.tracing.stop(path=trace_path)
+                try:
+                    await self.page.context.tracing.stop(path=trace_path)
+                except:
+                    pass
+            
             raise
     
     async def test_scenario(self):
@@ -116,10 +179,23 @@ class SimplifiedFramework(User):
         """
         raise NotImplementedError("Subclass must implement test_scenario()")
     
-    @asynccontextmanager
-    async def transaction(self, name: str, min_pace_ms: int = None, max_pace_ms: int = None):
+    def context(self) -> dict:
+        """
+        Return context dictionary for Locust event metadata.
+        """
+        return {
+            "vuserid": getattr(self, 'vuserid', None),
+            "iteration": getattr(self, 'iteration', None),
+            "task": getattr(self, 'currenttask', None),
+            "txn": getattr(self, 'currenttxn', None),
+            "class": getattr(self, 'currentclass', None),
+        }
+    
+    # Helper method to use enhanced txn function
+    def transaction(self, name: str, min_pace_ms: int = None, max_pace_ms: int = None):
         """
         Context manager for measuring and reporting transactions.
+        Uses enhanced txn from common_enhanced module.
         
         Usage:
             async with self.transaction("Login"):
@@ -132,44 +208,7 @@ class SimplifiedFramework(User):
             min_pace_ms: Minimum pacing delay after transaction (milliseconds)
             max_pace_ms: Maximum pacing delay after transaction (milliseconds)
         """
-        self.current_transaction = name
-        start_time = time.time()
-        start_perf = time.perf_counter()
-        
-        try:
-            yield  # Execute the transaction code
-            
-            # Fire success event to Locust
-            response_time = (time.perf_counter() - start_perf) * 1000
-            self.environment.events.request.fire(
-                request_type="transaction",
-                name=name,
-                response_time=response_time,
-                response_length=0,
-                exception=None,
-            )
-            
-        except Exception as e:
-            # Fire failure event to Locust
-            self.environment.events.request.fire(
-                request_type="transaction",
-                name=name,
-                response_time=None,
-                response_length=0,
-                exception=e,
-            )
-            raise
-        
-        finally:
-            self.current_transaction = None
-            
-            # Apply pacing if specified
-            if min_pace_ms is not None and max_pace_ms is not None:
-                delay = random.randint(min_pace_ms, max_pace_ms) / 1000
-                await asyncio.sleep(delay)
-            
-            # Small stability buffer
-            await asyncio.sleep(0.1)
+        return txn(self, name=name, min_pace_ms=min_pace_ms, max_pace_ms=max_pace_ms)
     
     async def login(self, username: str, password: str):
         """
@@ -184,7 +223,7 @@ class SimplifiedFramework(User):
             await self.page.wait_for_load_state("networkidle")
         
         self.has_logged_in = True
-        print(f"[User {id(self)}] Logged in as {username}")
+        self.pprint(f"Logged in as {username}")
     
     async def logout(self):
         """
@@ -196,7 +235,7 @@ class SimplifiedFramework(User):
             await self.page.wait_for_load_state("networkidle")
         
         self.has_logged_in = False
-        print(f"[User {id(self)}] Logged out")
+        self.pprint("Logged out")
 
 
 # Event hooks for custom metrics or logging
