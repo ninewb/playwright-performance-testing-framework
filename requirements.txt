@@ -1,0 +1,2 @@
+playwright>=1.40.0
+locust>=2.20.0
