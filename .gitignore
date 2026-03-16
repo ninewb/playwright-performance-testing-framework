@@ -1,0 +1,49 @@
+# Configuration - never check in credentials!
+
+# Base Config
+config.json
+
+# Debugging
+debug.azcli
+
+# Node.js for autogenerating change logs
+node_modules/
+
+# Mac OS
+.DS_Store
+
+# From template: Visual Studio
+.vs/
+*.sublime-project
+*.sublime-workspace
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+*.log
+*.vspscc
+*.vssscc
+.builds
+.localhistory/
+.idea/
+.vscode/
+
+# Python
+*.pyc
+*.pyo
+__pycache__/
+venv/
+.venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# Local cache
+out/
+Truepwtrace.*
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
