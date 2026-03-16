@@ -1,0 +1,97 @@
+trigger: none
+
+parameters:
+
+  - name: test
+    displayName: Test
+    type: string
+    values:
+      - aml_alert
+      - aml_hydration
+      - aml_report
+      - aml_search
+
+  - name: environment
+    displayName: Environment
+    type: string
+    values:
+      - dev
+      - staging
+      - prod
+
+  - name: users
+    displayName: Number of Users
+    type: number
+    default: 10
+
+  - name: duration
+    displayName: Test Duration (e.g. 60s, 5m, 1h)
+    type: string
+    default: 5m
+
+  - name: spawnRate
+    displayName: Spawn Rate (users/second)
+    type: number
+    default: 1
+
+  - name: workers
+    displayName: Number of Workers
+    type: number
+    default: 2
+
+variables:
+  - group: performance-testing-secrets        # ADO variable group — holds ACRUSER, ACRPASS, ACRNAME
+  - group: performance-testing-environments   # ADO variable group — holds BASE_URL_DEV, BASE_URL_STAGING, BASE_URL_PROD
+  - name: NAMESPACE
+    value: testing
+  - name: LOCUSTFILE
+    value: tests/${{ parameters.test }}.py
+
+pool:
+  name: Default   # replace with your self-hosted agent pool that has kubectl access
+
+stages:
+
+  - stage: PerformanceTest
+    displayName: Run Performance Test — ${{ parameters.test }}
+    jobs:
+
+      - job: RunTest
+        displayName: ${{ parameters.test }} | ${{ parameters.users }} users | ${{ parameters.duration }}
+        timeoutInMinutes: 120
+
+        steps:
+
+          - checkout: self
+
+          - bash: |
+              case "${{ parameters.environment }}" in
+                dev)     echo "##vso[task.setvariable variable=BASE_URL]$(BASE_URL_DEV)" ;;
+                staging) echo "##vso[task.setvariable variable=BASE_URL]$(BASE_URL_STAGING)" ;;
+                prod)    echo "##vso[task.setvariable variable=BASE_URL]$(BASE_URL_PROD)" ;;
+              esac
+            displayName: Resolve Environment URL
+
+          - bash: |
+              python3 run_test.py "$(LOCUSTFILE)" \
+                --kubernetes \
+                --users "${{ parameters.users }}" \
+                --spawn-rate "${{ parameters.spawnRate }}" \
+                --run-time "${{ parameters.duration }}" \
+                --base-url "$(BASE_URL)" \
+                --environment "${{ parameters.environment }}" \
+                --workers "${{ parameters.workers }}" \
+                --namespace "$(NAMESPACE)"
+            displayName: Execute Performance Test
+
+          - bash: |
+              python3 aggregateResults.py --logdir out/ --test "${{ parameters.test }}" \
+                --users "${{ parameters.users }}" --duration "${{ parameters.duration }}" \
+                --environment "${{ parameters.environment }}"
+            displayName: Aggregate Results
+            condition: always()
+
+          - publish: out/
+            artifact: test-results-${{ parameters.test }}-${{ parameters.environment }}
+            displayName: Publish Test Artifacts
+            condition: always()

@@ -3,6 +3,9 @@
 # Base Config
 config.json
 
+# Secrets - never commit
+manifest/performance-secret.yaml
+
 # Debugging
 debug.azcli
 

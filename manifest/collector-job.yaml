@@ -1,0 +1,120 @@
+---
+# Collector Job — triggered by run_test.py after LocustTest CR completes.
+# init container: stages CSV + trace files from the shared PVC into a run-specific directory
+# main container: compresses the staged output and uploads it to Azure Blob Storage
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: %%LOCUSTTESTNAME%%-collector
+  namespace: %%NAMESPACE%%
+  labels:
+    app: performance-collector
+    test: %%LOCUSTTESTNAME%%
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: playwright-locust
+      restartPolicy: Never
+      volumes:
+        - name: azurefile
+          persistentVolumeClaim:
+            claimName: azure-file-pvc
+        - name: staging
+          emptyDir: {}
+      initContainers:
+        - name: collect
+          image: alpine:3.19
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              DEST=/staging/%%TESTNAME%%/%%ENVIRONMENT%%/%%TIMESTAMP%%
+              mkdir -p "$DEST/csv" "$DEST/trace"
+
+              echo "INFO: Staging CSV files..."
+              find /lotest/share -maxdepth 1 -name "locust_stats*.csv" -exec cp {} "$DEST/csv/" \; 2>/dev/null || true
+
+              echo "INFO: Staging trace files..."
+              if [ -d /lotest/share/trace ] && [ "$(ls -A /lotest/share/trace 2>/dev/null)" ]; then
+                cp -r /lotest/share/trace/. "$DEST/trace/"
+              else
+                echo "WARN: No trace files found at /lotest/share/trace — tracing may be disabled"
+              fi
+
+              echo "INFO: Staged output:"
+              find "$DEST" -type f
+          volumeMounts:
+            - name: azurefile
+              mountPath: /lotest/share
+            - name: staging
+              mountPath: /staging
+      containers:
+        - name: upload
+          image: mcr.microsoft.com/azure-cli:latest
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              ARCHIVE="/tmp/%%TESTNAME%%-%%ENVIRONMENT%%-%%TIMESTAMP%%.tar.gz"
+              tar czf "$ARCHIVE" -C /staging .
+              echo "INFO: Archive size: $(du -sh $ARCHIVE | cut -f1)"
+
+              # Authenticate — service principal if credentials provided, otherwise managed identity
+              if [ -n "${AZURE_CLIENT_ID}" ] && [ -n "${AZURE_CLIENT_SECRET}" ] && [ -n "${AZURE_TENANT_ID}" ]; then
+                echo "INFO: Logging in via service principal..."
+                az login --service-principal \
+                  --username "${AZURE_CLIENT_ID}" \
+                  --password "${AZURE_CLIENT_SECRET}" \
+                  --tenant "${AZURE_TENANT_ID}" \
+                  --output none
+              else
+                echo "INFO: Using managed identity..."
+              fi
+
+              BLOB_NAME="%%TESTNAME%%/%%ENVIRONMENT%%/%%TIMESTAMP%%.tar.gz"
+              echo "INFO: Uploading to ${STORAGE_ACCOUNT}/${BLOB_CONTAINER}/${BLOB_NAME}..."
+              az storage blob upload \
+                --account-name "${STORAGE_ACCOUNT}" \
+                --container-name "${BLOB_CONTAINER}" \
+                --name "${BLOB_NAME}" \
+                --file "$ARCHIVE" \
+                --auth-mode login \
+                --overwrite
+
+              echo "INFO: Upload complete."
+              echo "BLOB_URL=https://${STORAGE_ACCOUNT}.blob.core.windows.net/${BLOB_CONTAINER}/${BLOB_NAME}"
+          env:
+            - name: STORAGE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: blob-upload-secret
+                  key: STORAGE_ACCOUNT
+            - name: BLOB_CONTAINER
+              valueFrom:
+                secretKeyRef:
+                  name: blob-upload-secret
+                  key: BLOB_CONTAINER
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: blob-upload-secret
+                  key: AZURE_CLIENT_ID
+                  optional: true
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: blob-upload-secret
+                  key: AZURE_CLIENT_SECRET
+                  optional: true
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: blob-upload-secret
+                  key: AZURE_TENANT_ID
+                  optional: true
+          volumeMounts:
+            - name: staging
+              mountPath: /staging

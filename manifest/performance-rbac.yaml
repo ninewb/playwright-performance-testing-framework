@@ -1,0 +1,28 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playwright-locust
+  namespace: testing
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: playwright-locust
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: playwright-locust-binding
+subjects:
+  - kind: ServiceAccount
+    name: playwright-locust
+    namespace: testing
+roleRef:
+  kind: ClusterRole
+  name: playwright-locust
+  apiGroup: rbac.authorization.k8s.io

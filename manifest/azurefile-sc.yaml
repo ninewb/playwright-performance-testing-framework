@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: azure-file-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile  # must support RWX
+  resources:
+    requests:
+      storage: 100Gi

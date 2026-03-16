@@ -1,0 +1,179 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pwlocusts.locust.io
+spec:
+  group: locust.io
+  names:
+    kind: PlaywrightLocust
+    listKind: PlaywrightLocustList
+    plural: pwlocusts
+    singular: pwlocust
+    shortNames:
+      - clotest
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                image:
+                  type: string
+                masterCommandSeed:
+                  type: string
+                workerCommandSeed:
+                  type: string
+                workerReplicas:
+                  type: integer
+                imagePullSecrets:
+                  type: array
+                  description: "List of image pull secrets for private registries"
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                configMapRef:
+                  type: object
+                  description: "Optional ConfigMap reference for mounting configuration data"
+                  properties:
+                    name:
+                      type: string
+                volumes:
+                  type: array
+                  description: "Volumes to attach to pods"
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      persistentVolumeClaim:
+                        type: object
+                        properties:
+                          claimName:
+                            type: string
+                volumeMounts:
+                  type: array
+                  description: "Volume mounts for containers"
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      mountPath:
+                        type: string
+                initContainers:
+                  type: array
+                  description: "Init containers to run before main container"
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      image:
+                        type: string
+                      command:
+                        type: array
+                        items:
+                          type: string
+                      volumeMounts:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            mountPath:
+                              type: string
+                service:
+                  type: object
+                  description: "Optional headless service configuration for Locust master-worker communication"
+                  properties:
+                    name:
+                      type: string
+                      description: "Service name for the Locust master service"
+                    port:
+                      type: integer
+                      description: "Service port for Locust master communication (default 5557)"
+                    type:
+                      type: string
+                      description: "Kubernetes service type (default ClusterIP)"
+                affinity:
+                  type: object
+                  description: "Pod scheduling affinity configuration"
+                  x-kubernetes-preserve-unknown-fields: true
+                tolerations:
+                  type: array
+                  description: "Pod tolerations for scheduling"
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: locust-operator
+  namespace: %%NAMESPACE%%
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: locust-operator
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["locust.io"]
+    resources: ["pwlocusts", "pwlocusts/status", "pwlocusts/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["locust.io"]
+    resources: ["customlocusttests", "locusttests"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: locust-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: locust-operator
+subjects:
+  - kind: ServiceAccount
+    name: locust-operator
+    namespace: %%NAMESPACE%%
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust-operator
+  namespace: %%NAMESPACE%%
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: locust-operator
+  template:
+    metadata:
+      labels:
+        app: locust-operator
+    spec:
+      serviceAccountName: locust-operator
+      imagePullSecrets:
+        - name: %%ACR_BASENAME%%pull
+      containers:
+        - name: operator
+          image: %%ACRNAME%%/locust-operator:latest
+          imagePullPolicy: Always

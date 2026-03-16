@@ -1,0 +1,74 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: playwright-locust
+  namespace: testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: benchmark-testing
+  template:
+    metadata:
+      labels:
+        app: benchmark-testing
+        sas.com/solution: sasaml
+        sas.com/deployment: sas-viya
+      annotations:
+        sas.com/component-name: operator
+        sas.com/certificate-file-format: pem
+    spec:
+      serviceAccountName: playwright-locust
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.azure.com/mode
+                    operator: NotIn
+                    values:
+                      - system
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: workload.sas.com/class
+                    operator: In
+                    values:
+                      - testing
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: workload.sas.com/class
+                    operator: NotIn
+                    values:
+                      - cas
+                      - compute
+                      - connect
+                      - stateless
+                      - stateful
+      tolerations:
+        - key: workload.sas.com/class
+          operator: Equal
+          value: testing
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: playwright-image-pull
+      containers:
+        - name: playwright-locust
+          image: fsiglobalacr.azurecr.io/playwright-locust:latest
+          imagePullPolicy: "Always"
+          resources:
+            limits: {}
+            requests: {}
+          envFrom:
+            - configMapRef:
+                name: performance-config
+          volumeMounts:
+            - name: pw-volume
+              mountPath: /app/persist
+      volumes:
+        - name: pw-volume
+          persistentVolumeClaim:
+            claimName: azure-file-pvc

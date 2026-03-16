@@ -1,0 +1,45 @@
+apiVersion: locust.io/v1
+kind: PlaywrightLocust
+metadata:
+  namespace: %%NAMESPACE%%
+  name: %%LOCUSTTESTNAME%%
+spec:
+  image: %%ACRNAME%%/locust-playwright:latest
+  imagePullSecrets:
+    - name: %%ACR_BASENAME%%pull
+  masterCommandSeed: >
+    locust 
+    --headless
+    --locustfile /lotest/src/%%LOCUSTFILE%%
+    --users %%NLOCUSTUSERS%%
+    --run-time %%RUNTIME_s%%
+    --spawn-rate %%SPAWNRATE_ups%%
+    --stop-timeout %%GRACEFUL_EXIT_s%%
+    --csv /lotest/share/locust_stats
+    --csv-full-history
+  workerCommandSeed: >
+    locust --worker
+    --locustfile /lotest/src/%%LOCUSTFILE%%
+  workerReplicas: %%WORKERREPLICAS%%
+  configMapRef:
+    name: py-pw-loc-configmap
+  service:
+    name: %%LOCUSTTESTNAME%%-metrics
+    port: 8089
+    type: ClusterIP
+  volumes:
+    - name: azurefile
+      persistentVolumeClaim:
+        claimName: azure-file-pvc
+  volumeMounts:
+    - name: azurefile
+      mountPath: /lotest/share
+    - name: py-pw-loc-configmap
+      mountPath: /lotest/src
+  initContainers:
+    - name: mount-check
+      image: busybox
+      command: ["sh", "-c", "echo Checking mount && ls /lotest/share"]
+      volumeMounts:
+        - name: azurefile
+          mountPath: /lotest/share

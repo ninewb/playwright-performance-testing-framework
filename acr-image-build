@@ -1,0 +1,68 @@
+#!/bin/bash
+
+image-build() {
+  local CONTAINER=""
+  local REGISTRY=""
+  local TAG=""
+  local USERNAME=""
+  local PASSWORD=""
+
+  # Parse arguments (macOS/Linux portable)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -c|--container) CONTAINER="$2"; shift 2;;
+      -r|--registry)  REGISTRY="$2";  shift 2;;
+      -t|--tag)       TAG="$2";       shift 2;;
+      -u|--username)  USERNAME="$2";  shift 2;;
+      -p|--password)  PASSWORD="$2";  shift 2;;
+      -h|--help)
+        echo "Usage: $0 -c <container> -r <registry> -t <tag> [-u <username>] [-p <password>]"
+        echo "Automatically detects architecture and builds the correct image platform."
+        return 0
+        ;;
+      *) echo "Unknown option: $1"; return 1;;
+    esac
+  done
+
+  [[ -n "${CONTAINER}" ]] || { echo "A container name (-c) must be defined."; return 2; }
+  [[ -n "${REGISTRY}" ]]  || { echo "A registry (-r) must be defined."; return 2; }
+  [[ -n "${TAG}" ]]       || { echo "A tag (-t) must be defined."; return 2; }
+
+  # Detect local architecture
+  local ARCH
+  ARCH=$(uname -m)
+  local PLATFORM
+
+  case "${ARCH}" in
+    arm64|aarch64)
+      PLATFORM="linux/amd64"
+      echo "Detected ARM host (${ARCH}) → building for ${PLATFORM} (for AKS/Rancher compatibility)."
+      ;;
+    x86_64)
+      PLATFORM="linux/amd64"
+      echo "Detected x86_64 host → building for ${PLATFORM}."
+      ;;
+    *)
+      PLATFORM="linux/amd64"
+      echo "Unknown architecture (${ARCH}) → defaulting to ${PLATFORM}."
+      ;;
+  esac
+
+  echo "Building image: ${REGISTRY}/${CONTAINER}:${TAG}"
+  docker buildx build --platform "${PLATFORM}" -t "${REGISTRY}/${CONTAINER}:${TAG}" .
+
+  # Handle login (if credentials provided)
+  if [[ -n "${USERNAME}" && -n "${PASSWORD}" ]]; then
+    echo "Logging in to ${REGISTRY}..."
+    echo "${PASSWORD}" | docker login "${REGISTRY}" -u "${USERNAME}" --password-stdin
+  else
+    echo "Skipping login (assuming already logged in or Rancher-managed secret)."
+  fi
+
+  echo "Pushing image..."
+  docker push "${REGISTRY}/${CONTAINER}:${TAG}"
+
+  echo "Successfully pushed ${REGISTRY}/${CONTAINER}:${TAG}"
+}
+
+image-build "$@"

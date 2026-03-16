@@ -1,0 +1,19 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-config
+  namespace: testing
+data:
+  BASEURL: "https://aml-performance-assurance-00f.zero.sas.com"
+  LOGONPASSWD: "Password123"
+  TXNTIMEOUT: "10000"
+  PWTRACE: "true"
+  INTERACTION_TIMEOUT: "5000"
+  INTER_ITERATION_DELAY_AVG: "2"
+  INTER_ITERATION_DELAY_FUZ: "0.5"
+  ABORT_ITERATION_WHEN_TXN_FAILS: "true"
+  CPU_REQ: "1000m"
+  CPU_LIM: "5000m"
+  MEM_REQ: "4G"
+  MEM_LIM: "16G"

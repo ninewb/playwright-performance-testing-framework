@@ -151,8 +151,9 @@ class SimplifiedFramework(User):
             await self.test_scenario()
             
             if self.enable_tracing:
-                trace_path = f"./traces/user_{self.vuserid}_iter_{self.iteration}.zip"
-                Path("./traces").mkdir(exist_ok=True)
+                trace_dir = os.getenv("TRACE_DIR", "./traces")
+                Path(trace_dir).mkdir(parents=True, exist_ok=True)
+                trace_path = f"{trace_dir}/user_{self.vuserid}_iter_{self.iteration}.zip"
                 await self.page.context.tracing.stop(path=trace_path)
             
             duration = time.time() - start_time
@@ -163,8 +164,9 @@ class SimplifiedFramework(User):
             self.pprint(f"✗ Iteration {self.iteration} failed: {type(e).__name__}: {str(e)[:100]}")
             
             if self.enable_tracing:
-                trace_path = f"./traces/user_{self.vuserid}_iter_{self.iteration}_FAILED.zip"
-                Path("./traces").mkdir(exist_ok=True)
+                trace_dir = os.getenv("TRACE_DIR", "./traces")
+                Path(trace_dir).mkdir(parents=True, exist_ok=True)
+                trace_path = f"{trace_dir}/user_{self.vuserid}_iter_{self.iteration}_FAILED.zip"
                 try:
                     await self.page.context.tracing.stop(path=trace_path)
                 except:
