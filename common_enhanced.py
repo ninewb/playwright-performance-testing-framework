@@ -289,13 +289,25 @@ async def txn(user, name: str = "unnamed", request_type: str = "event",
             raise
     
     finally:
-        # Apply pacing if specified
+        # Explicit pacing takes priority
         if min_pace_ms is not None and max_pace_ms is not None:
             delay = random.randint(min_pace_ms, max_pace_ms)
             if hasattr(user, 'pprint'):
-                user.pprint(f"⏱ Pacing {delay}ms")
+                user.pprint(f"Pacing {delay}ms")
             await asyncio.sleep(delay / 1000)
-        
+        else:
+            # Fall back to global inter-iteration pacing from config
+            try:
+                avg  = float(os.getenv("INTER_ITERATION_DELAY_AVG", "0"))
+                fuzz = float(os.getenv("INTER_ITERATION_DELAY_FUZ", "0"))
+            except Exception:
+                avg = fuzz = 0
+            if avg > 0:
+                delay_sec = random.uniform((1 - fuzz) * avg, (1 + fuzz) * avg)
+                if hasattr(user, 'pprint'):
+                    user.pprint(f"Pacing {delay_sec * 1000:.0f}ms")
+                await asyncio.sleep(delay_sec)
+
         # Small stability buffer
         await asyncio.sleep(0.1)
         user.currenttxn = None
@@ -685,3 +697,19 @@ def on_locust_init(environment, **kwargs):
     logger.info("=" * 60)
     logger.info("Enhanced Framework Initialized")
     logger.info("=" * 60)
+
+
+# ==================== Global Config Exports ====================
+# Exported so tests can use bare names after: from common_enhanced import *
+# Keys are normalised — accepts both SAS K8s names (BASEURL, TXNTIMEOUT)
+# and simplified config names (BASE_URL, TRANSACTION_TIMEOUT).
+
+BASEURL      = os.getenv("BASEURL",      os.getenv("BASE_URL",            "https://example.com"))
+TXNTIMEOUT   = int(os.getenv("TXNTIMEOUT", os.getenv("TRANSACTION_TIMEOUT", "10000")))
+LOGONPASSWD  = os.getenv("LOGONPASSWD",  os.getenv("TEST_PASSWORD",        ""))
+LOGONUSER    = os.getenv("LOGONUSER",    os.getenv("TEST_USERNAME",        "testuser"))
+
+PWTRACE      = os.getenv("PWTRACE",      os.getenv("ENABLE_TRACING",       "false")).lower() in ("true", "1", "yes")
+ABORT_ITERATION_WHEN_TXN_FAILS = os.getenv("ABORT_ITERATION_WHEN_TXN_FAILS", "true").lower() in ("true", "1", "yes")
+INTER_ITERATION_DELAY_AVG      = float(os.getenv("INTER_ITERATION_DELAY_AVG", "2"))
+INTER_ITERATION_DELAY_FUZ      = float(os.getenv("INTER_ITERATION_DELAY_FUZ", "0.5"))
