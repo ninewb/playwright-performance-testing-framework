@@ -21,13 +21,16 @@ spec:
   image: %%ACRNAME%%/locust-playwright:latest
   imagePullSecrets:
     - name: %%ACR_BASENAME%%pull
+  envFrom:
+    - configMapRef:
+        name: performance-config
   env:
     - name: LOCUST_AUTOSTART
       value: "true"
     - name: TRACE_DIR
       value: /lotest/share/trace
   masterCommandSeed: >
-    locust 
+    locust
     --web-host 0.0.0.0
     --web-port 8089
     --locustfile /lotest/src/%%LOCUSTFILE%%
@@ -41,8 +44,6 @@ spec:
     locust --worker
     --locustfile /lotest/src/%%LOCUSTFILE%%
   workerReplicas: %%WORKERREPLICAS%%
-  configMapRef:
-    name: py-pw-loc-configmap
   service:
     name: %%LOCUSTTESTNAME%%-metrics
     port: 8089
@@ -58,10 +59,6 @@ spec:
   volumeMounts:
     - name: azurefile
       mountPath: /lotest/share
-    - name: py-pw-loc-configmap
-      mountPath: /lotest/src
-  # configMapRef:
-  #   name: py-pw-loc-configmap
   initContainers:
     - name: mount-check
       image: busybox

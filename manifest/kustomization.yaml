@@ -1,9 +1,8 @@
 ---
 kind: Kustomization
 resources:
- - performance-namespace.yaml
- - performance-configmap.yaml
- - performance-pvc.yaml
- - performance-secret.yaml
- - performance-rbac.yaml
- - performance-deployment.yaml
+  - performance-namespace.yaml
+  - performance-configmap.yaml
+  - performance-pvc.yaml
+  - performance-blob-secret.yaml
+  - performance-rbac.yaml

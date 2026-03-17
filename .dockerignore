@@ -1,0 +1,16 @@
+.git
+.gitignore
+env/
+user_data/
+traces/
+out/
+*.log
+config.json
+manifest/
+templates/
+ado-playwright-locust-pipeline.yml
+README.md
+QUICKSTART.md
+LICENSE
+acr-image-build
+run_test.py
