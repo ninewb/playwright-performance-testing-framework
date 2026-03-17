@@ -56,9 +56,14 @@ spec:
     - name: azurefile
       persistentVolumeClaim:
         claimName: azure-file-pvc
+    - name: test-src
+      configMap:
+        name: py-pw-loc-configmap
   volumeMounts:
     - name: azurefile
       mountPath: /lotest/share
+    - name: test-src
+      mountPath: /lotest/src
   initContainers:
     - name: mount-check
       image: busybox

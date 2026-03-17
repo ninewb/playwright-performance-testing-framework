@@ -63,16 +63,11 @@ COPY --from=playwright /app/venv                /app/venv
 
 WORKDIR /app
 
-# Framework source
+# Framework source — test files are injected at runtime via py-pw-loc-configmap
 COPY framework.py       .
 COPY common_enhanced.py .
 COPY utils.py           .
 COPY requirements.txt   .
-
-# Test files — expects tests/ directory to be present at build time.
-# Clone the tests repo alongside this repo before running docker build:
-#   git clone <tests-repo> tests/
-COPY tests/ /lotest/src/
 
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"

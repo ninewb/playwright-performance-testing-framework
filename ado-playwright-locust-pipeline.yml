@@ -45,7 +45,9 @@ variables:
   - name: NAMESPACE
     value: testing
   - name: LOCUSTFILE
-    value: tests/${{ parameters.test }}.py
+    value: ${{ parameters.test }}.py
+  - name: TESTS_REPO
+    value: $(System.DefaultWorkingDirectory)/py-playwright-tests
 
 pool:
   name: Default   # replace with your self-hosted agent pool that has kubectl access
@@ -65,6 +67,12 @@ stages:
           - checkout: self
 
           - bash: |
+              git clone $(TESTS_REPO_URL) "$(TESTS_REPO)"
+            displayName: Clone py-playwright-tests
+            env:
+              TESTS_REPO_URL: $(TESTS_REPO_URL)  # set in performance-testing-secrets variable group
+
+          - bash: |
               case "${{ parameters.environment }}" in
                 dev)     echo "##vso[task.setvariable variable=BASE_URL]$(BASE_URL_DEV)" ;;
                 staging) echo "##vso[task.setvariable variable=BASE_URL]$(BASE_URL_STAGING)" ;;
@@ -75,6 +83,7 @@ stages:
           - bash: |
               python3 run_test.py "$(LOCUSTFILE)" \
                 --kubernetes \
+                --tests-dir "$(TESTS_REPO)" \
                 --users "${{ parameters.users }}" \
                 --spawn-rate "${{ parameters.spawnRate }}" \
                 --run-time "${{ parameters.duration }}" \
@@ -82,16 +91,4 @@ stages:
                 --environment "${{ parameters.environment }}" \
                 --workers "${{ parameters.workers }}" \
                 --namespace "$(NAMESPACE)"
-            displayName: Execute Performance Test
-
-          - bash: |
-              python3 aggregateResults.py --logdir out/ --test "${{ parameters.test }}" \
-                --users "${{ parameters.users }}" --duration "${{ parameters.duration }}" \
-                --environment "${{ parameters.environment }}"
-            displayName: Aggregate Results
-            condition: always()
-
-          - publish: out/
-            artifact: test-results-${{ parameters.test }}-${{ parameters.environment }}
-            displayName: Publish Test Artifacts
-            condition: always()
+            displayName: Dispatch Performance Test (fire-and-forget)

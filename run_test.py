@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Test Runner — local and Kubernetes modes.
-Local:      python run_test.py tests/aml_search.py -u 10 -r 1 -t 5m
-Kubernetes: python run_test.py tests/aml_search.py --kubernetes --environment staging --workers 3
+
+Local:      python run_test.py aml_search.py -u 10 -r 1 -t 5m
+Kubernetes: python run_test.py aml_search.py --kubernetes --environment staging --workers 3
+              --tests-dir /path/to/py-playwright-tests
 """
 
 import re
 import sys
 import os
-import time
 import argparse
 import subprocess
 from datetime import datetime, timezone
@@ -47,83 +48,56 @@ def kubectl_apply(yaml_content: str, namespace: str):
     print(result.stdout.strip())
 
 
-def wait_for_locust_completion(test_name: str, namespace: str, timeout: int = 7200) -> bool:
+def create_test_configmap(test_file: str, tests_dir: str, namespace: str):
     """
-    Wait for all locust master/worker pods to finish.
-    Phase 1 — wait up to 5 min for pods to appear.
-    Phase 2 — wait up to timeout for all pods to reach a terminal state.
+    Create py-pw-loc-configmap containing:
+      - Framework files: framework.py, common_enhanced.py, utils.py
+      - Test file: the specific test being run (resolved from tests_dir)
+
+    Uses kubectl dry-run to generate the YAML then applies it,
+    so existing configmaps are updated in-place.
     """
-    deadline = time.time() + timeout
+    repo_dir = Path(__file__).parent
 
-    print(f"INFO: Waiting for test pods to appear (test={test_name})...")
-    pods_appeared = False
-    while time.time() < deadline:
-        r = subprocess.run(
-            ['kubectl', '-n', namespace, 'get', 'pods',
-             '-l', 'locust.io/role', '--no-headers'],
-            capture_output=True, text=True
+    # Resolve test file path — try tests_dir first, then direct path
+    test_name = Path(test_file).name
+    candidates = [
+        Path(tests_dir) / test_name,
+        Path(tests_dir) / 'tests' / test_name,
+        Path(test_file),
+    ]
+    test_path = next((p for p in candidates if p.exists()), None)
+    if test_path is None:
+        raise FileNotFoundError(
+            f"Test file '{test_name}' not found. Searched: {[str(p) for p in candidates]}"
         )
-        lines = [l for l in r.stdout.strip().splitlines() if l and test_name in l]
-        if lines:
-            pods_appeared = True
-            print(f"INFO: Test pods detected ({len(lines)} pod(s)). Waiting for completion...")
-            break
-        time.sleep(5)
 
-    if not pods_appeared:
-        print("ERROR: Timed out waiting for test pods to appear.")
-        return False
+    print(f"INFO: Building py-pw-loc-configmap from {test_path}")
 
-    terminal = {'Completed', 'Succeeded', 'Error', 'CrashLoopBackOff', 'OOMKilled'}
-    while time.time() < deadline:
-        r = subprocess.run(
-            ['kubectl', '-n', namespace, 'get', 'pods',
-             '-l', 'locust.io/role', '--no-headers'],
-            capture_output=True, text=True
-        )
-        lines = [l for l in r.stdout.strip().splitlines() if l and test_name in l]
-        if not lines:
-            print("INFO: All test pods have terminated.")
-            return True
-        still_running = [l for l in lines if not any(t in l for t in terminal)]
-        if not still_running:
-            print("INFO: All test pods reached terminal state.")
-            return True
-        statuses = ', '.join(l.split()[2] for l in lines if len(l.split()) > 2)
-        print(f"INFO: Pods still running — {statuses}")
-        time.sleep(10)
+    cmd = [
+        'kubectl', '-n', namespace,
+        'create', 'configmap', 'py-pw-loc-configmap',
+        f'--from-file=framework.py={repo_dir / "framework.py"}',
+        f'--from-file=common_enhanced.py={repo_dir / "common_enhanced.py"}',
+        f'--from-file=utils.py={repo_dir / "utils.py"}',
+        f'--from-file={test_name}={test_path}',
+        '--dry-run=client', '-o', 'yaml',
+    ]
 
-    print("ERROR: Timed out waiting for test completion.")
-    return False
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to generate configmap YAML:\n{result.stderr}")
 
-
-def wait_for_job(job_name: str, namespace: str, timeout: int = 600) -> bool:
-    print(f"INFO: Waiting for collector job '{job_name}' to complete...")
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        r = subprocess.run(
-            ['kubectl', '-n', namespace, 'get', 'job', job_name,
-             '-o', 'jsonpath={.status.conditions[?(@.type=="Complete")].status}'],
-            capture_output=True, text=True
-        )
-        if r.stdout.strip() == 'True':
-            print(f"INFO: Collector job '{job_name}' completed successfully.")
-            return True
-        r_fail = subprocess.run(
-            ['kubectl', '-n', namespace, 'get', 'job', job_name,
-             '-o', 'jsonpath={.status.conditions[?(@.type=="Failed")].status}'],
-            capture_output=True, text=True
-        )
-        if r_fail.stdout.strip() == 'True':
-            print(f"ERROR: Collector job '{job_name}' failed.")
-            return False
-        time.sleep(10)
-    print(f"ERROR: Timed out waiting for collector job '{job_name}'.")
-    return False
+    kubectl_apply(result.stdout, namespace)
+    print(f"INFO: py-pw-loc-configmap applied ({test_name} + framework files)")
 
 
 def run_kubernetes(args, config):
-    """Orchestrate the full Kubernetes test flow."""
+    """
+    Fire-and-forget Kubernetes dispatch.
+    Creates the configmap, applies the LocustTest CR and Collector Job,
+    then exits. Everything else runs autonomously in the cluster.
+    """
     template_dir = Path(args.template_dir)
     manifest_dir = Path(args.manifest_dir)
 
@@ -135,7 +109,6 @@ def run_kubernetes(args, config):
     users       = int(config.get("USERS", "1"))
     spawn_rate  = float(config.get("SPAWN_RATE", "1"))
     run_time    = config.get("RUN_TIME", "5m")
-    base_url    = config.get("BASE_URL", "")
 
     locust_file = Path(args.testfile).name
     acr_name    = args.acrname or config.get("ACRNAME", "")
@@ -157,42 +130,36 @@ def run_kubernetes(args, config):
         'TIMESTAMP':       timestamp,
     }
 
-    # Apply LocustTest CR
+    # 1. Build and apply configmap (framework files + test file)
+    create_test_configmap(args.testfile, args.tests_dir, namespace)
+
+    # 2. Apply LocustTest CR — operator creates master + worker pods
     locust_test_yaml = render_template(
         str(template_dir / 'locust-test.yaml'), substitutions
     )
-    print(f"\nINFO: Applying LocustTest CR for '{test_name}'...")
+    print(f"\nINFO: Applying LocustTest CR '{test_name}'...")
     kubectl_apply(locust_test_yaml, namespace)
 
-    # Wait for test to complete
-    completed = wait_for_locust_completion(test_name, namespace, timeout=int(args.test_timeout))
-    if not completed:
-        print("ERROR: Test did not complete within the timeout. Check pod logs for details.")
-        sys.exit(1)
-
-    # Apply collector job
+    # 3. Apply Collector Job — watches for test completion, then uploads to blob
     collector_yaml = render_template(
         str(manifest_dir / 'collector-job.yaml'), substitutions
     )
-    print(f"\nINFO: Applying collector job for '{test_name}'...")
+    print(f"INFO: Applying Collector Job '{test_name}-collector'...")
     kubectl_apply(collector_yaml, namespace)
 
-    job_name = f"{test_name}-collector"
-    success = wait_for_job(job_name, namespace, timeout=600)
-    if not success:
-        print("ERROR: Collector job did not complete. Check job logs:")
-        print(f"  kubectl -n {namespace} logs job/{job_name} -c upload")
-        sys.exit(1)
+    # 4. Exit — pipeline is done, cluster handles the rest
+    print(f"""
+INFO: Test dispatched successfully.
+  Test:        {test_name}
+  Users:       {users}
+  Duration:    {run_time}
+  Environment: {environment}
+  Namespace:   {namespace}
 
-    # Print blob URL from job logs
-    r = subprocess.run(
-        ['kubectl', '-n', namespace, 'logs', f'job/{job_name}', '-c', 'upload'],
-        capture_output=True, text=True
-    )
-    for line in r.stdout.splitlines():
-        if line.startswith('BLOB_URL='):
-            print(f"\nINFO: Results available at: {line.split('=', 1)[1]}\n")
-            break
+  Monitor pods:  kubectl -n {namespace} get pods
+  Monitor job:   kubectl -n {namespace} get job {test_name}-collector
+  Collector log: kubectl -n {namespace} logs job/{test_name}-collector -c upload
+""")
 
 
 # ---------------------------------------------------------------------------
@@ -206,43 +173,44 @@ def main():
         epilog="""
 Examples:
   # Local run
-  python run_test.py tests/aml_search.py -u 10 -r 1 -t 5m
+  python run_test.py aml_search.py -u 10 -r 1 -t 5m
 
-  # Kubernetes run
-  python run_test.py tests/aml_search.py --kubernetes --environment staging --workers 3
+  # Kubernetes run (fire-and-forget)
+  python run_test.py aml_search.py --kubernetes --environment staging \\
+    --workers 3 --tests-dir /path/to/py-playwright-tests
 
   # Local with web UI
-  python run_test.py tests/aml_search.py --web-ui
+  python run_test.py aml_search.py --web-ui
         """
     )
 
-    parser.add_argument("testfile", help="Test file path (e.g., tests/aml_search.py)")
+    parser.add_argument("testfile", help="Test filename (e.g., aml_search.py)")
 
     # Common args
-    parser.add_argument("-u", "--users",      type=int,   default=None, help="Number of concurrent users")
-    parser.add_argument("-r", "--spawn-rate", type=float, default=None, help="User spawn rate per second")
-    parser.add_argument("-t", "--run-time",   type=str,   default=None, help="Test duration (e.g., 30s, 5m, 1h)")
-    parser.add_argument("--base-url",         type=str,   default=None, help="Base URL (overrides config)")
-    parser.add_argument("--config",           type=str,   default="config.json", help="Config file path")
-    parser.add_argument("--headless",         action="store_true", help="Run browsers headless")
-    parser.add_argument("--headed",           action="store_true", help="Run browsers headed")
+    parser.add_argument("-u", "--users",      type=int,   default=None)
+    parser.add_argument("-r", "--spawn-rate", type=float, default=None)
+    parser.add_argument("-t", "--run-time",   type=str,   default=None)
+    parser.add_argument("--base-url",         type=str,   default=None)
+    parser.add_argument("--config",           type=str,   default="config.json")
+    parser.add_argument("--headless",         action="store_true")
+    parser.add_argument("--headed",           action="store_true")
 
     # Local-only args
-    parser.add_argument("--web-ui",   action="store_true", help="Launch Locust web UI")
-    parser.add_argument("--web-port", type=int, default=8089, help="Web UI port")
-    parser.add_argument("--csv",      type=str, default=None, help="CSV output prefix")
-    parser.add_argument("--html",     type=str, default=None, help="HTML report output file")
+    parser.add_argument("--web-ui",   action="store_true")
+    parser.add_argument("--web-port", type=int, default=8089)
+    parser.add_argument("--csv",      type=str, default=None)
+    parser.add_argument("--html",     type=str, default=None)
 
     # Kubernetes args
-    parser.add_argument("-k", "--kubernetes",   action="store_true", help="Run test in Kubernetes via Locust Operator")
-    parser.add_argument("--namespace",    type=str, default="testing",     help="Kubernetes namespace")
-    parser.add_argument("--workers",      type=int, default=2,             help="Number of Locust worker replicas")
-    parser.add_argument("--environment",  type=str, default="dev",         help="Environment name (dev/staging/prod)")
-    parser.add_argument("--acrname",      type=str, default=None,          help="ACR registry hostname (e.g. myacr.azurecr.io)")
-    parser.add_argument("--graceful-exit",type=str, default="120s",        help="Locust graceful stop timeout")
-    parser.add_argument("--test-timeout", type=int, default=7200,          help="Max seconds to wait for test completion")
-    parser.add_argument("--template-dir", type=str, default="templates",   help="Path to Locust CR templates")
-    parser.add_argument("--manifest-dir", type=str, default="manifest",    help="Path to K8s manifest templates")
+    parser.add_argument("-k", "--kubernetes",   action="store_true",  help="Dispatch test to Kubernetes (fire-and-forget)")
+    parser.add_argument("--tests-dir",    type=str, default=".",          help="Path to checked-out py-playwright-tests repo")
+    parser.add_argument("--namespace",    type=str, default="testing")
+    parser.add_argument("--workers",      type=int, default=2)
+    parser.add_argument("--environment",  type=str, default="dev")
+    parser.add_argument("--acrname",      type=str, default=None)
+    parser.add_argument("--graceful-exit",type=str, default="120s")
+    parser.add_argument("--template-dir", type=str, default="templates")
+    parser.add_argument("--manifest-dir", type=str, default="manifest")
 
     args = parser.parse_args()
 
@@ -258,20 +226,23 @@ Examples:
     config.export_to_env()
     config.display()
 
-    if not Path(args.testfile).exists():
-        print(f"Error: Test file not found: {args.testfile}")
-        sys.exit(1)
-
-    # -- Kubernetes mode --
+    # -- Kubernetes mode (fire-and-forget) --
     if args.kubernetes:
         run_kubernetes(args, config)
         return
 
     # -- Local mode --
+    test_file = Path(args.testfile)
+    if not test_file.exists():
+        # Try in tests_dir
+        test_file = Path(args.tests_dir) / args.testfile
+    if not test_file.exists():
+        print(f"Error: Test file not found: {args.testfile}")
+        sys.exit(1)
+
     users      = int(config.get("USERS", "1"))
     spawn_rate = float(config.get("SPAWN_RATE", "1"))
-
-    locust_cmd = ["locust", "-f", str(args.testfile)]
+    locust_cmd = ["locust", "-f", str(test_file)]
 
     if args.web_ui:
         locust_cmd.extend(["--web-host", "0.0.0.0", "--web-port", str(args.web_port)])
@@ -291,7 +262,7 @@ Examples:
         print(f"\nTest failed with error code {e.returncode}\n")
         sys.exit(e.returncode)
     except KeyboardInterrupt:
-        print("\nTest interrupted by user\n")
+        print("\nTest interrupted\n")
         sys.exit(130)
 
 

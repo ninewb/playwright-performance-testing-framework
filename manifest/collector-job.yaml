@@ -23,6 +23,27 @@ spec:
         - name: staging
           emptyDir: {}
       initContainers:
+        - name: wait-for-tests
+          image: bitnami/kubectl:latest
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "INFO: Waiting for all locust pods to terminate (test: %%LOCUSTTESTNAME%%)..."
+              while true; do
+                RUNNING=$(kubectl -n %%NAMESPACE%% get pods \
+                  -l locust-test=%%LOCUSTTESTNAME%% \
+                  --field-selector=status.phase=Running \
+                  --no-headers 2>/dev/null | wc -l)
+                if [ "$RUNNING" -eq 0 ]; then
+                  echo "INFO: All locust pods have terminated. Proceeding with collection."
+                  break
+                fi
+                echo "INFO: $RUNNING pod(s) still running — sleeping 15s..."
+                sleep 15
+              done
+
         - name: collect
           image: alpine:3.19
           command:
